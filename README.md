@@ -1,6 +1,6 @@
 # server-healthcheck
 
-[![CI](https://github.com/OWNER/server-healthcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/server-healthcheck/actions/workflows/ci.yml)
+[![CI](https://github.com/int3erlud3/server-healthcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/int3erlud3/server-healthcheck/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A dependency-free Bash health check for Linux servers. It checks CPU load, memory,
@@ -28,7 +28,7 @@ No root privileges are required.
 ## Installation
 
 ```bash
-git clone https://github.com/OWNER/server-healthcheck.git
+git clone https://github.com/int3erlud3/server-healthcheck.git
 sudo install -m 0755 server-healthcheck/bin/server-healthcheck /usr/local/bin/
 sudo install -m 0644 server-healthcheck/examples/healthcheck.conf /etc/server-healthcheck.conf
 ```
