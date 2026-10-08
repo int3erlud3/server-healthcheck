@@ -1,0 +1,9 @@
+# Local configs and output
+*.local.conf
+*.log
+/out/
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

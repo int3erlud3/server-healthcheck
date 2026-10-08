@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# server-healthcheck - lightweight Linux host health check (CPU, RAM, disk,
+# systemd services, listening TCP ports) with text or JSON output.
+#
+# Exit codes (Nagios/Icinga compatible): 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN
+set -euo pipefail
+
+readonly VERSION="1.0.0"
+readonly PROG="${0##*/}"
+readonly OK=0 WARN=1 CRIT=2 UNKNOWN=3
+readonly STATUS_NAMES=(OK WARNING CRITICAL UNKNOWN)
+
+# ---- defaults (override via config file or CLI) ---------------------------
+CPU_WARN=80 CPU_CRIT=95     # 1-min load average per core, in percent
+MEM_WARN=80 MEM_CRIT=95     # used memory (MemTotal - MemAvailable), percent
+DISK_WARN=80 DISK_CRIT=90   # used space per mounted filesystem, percent
+SERVICES=""                 # comma-separated systemd units that must be active
+PORTS=""                    # comma-separated TCP ports that must be listening
+CHECKS="cpu,mem,disk,services,ports"
+FORMAT="text"
+
+# Data sources, overridable for testing only.
+PROC_LOADAVG="${HC_PROC_LOADAVG:-/proc/loadavg}"
+PROC_MEMINFO="${HC_PROC_MEMINFO:-/proc/meminfo}"
+
+R_NAME=() R_STATUS=() R_VALUE=() R_MSG=()
+WORST=$OK
+
+usage() {
+  cat <<USAGE
+Usage: $PROG [options]
+
+  -f, --format text|json     Output format (default: text)
+  -c, --config FILE          Read KEY=VALUE settings (parsed, never sourced)
+  -s, --services LIST        Comma-separated systemd units that must be active
+  -p, --ports LIST           Comma-separated TCP ports that must be listening
+  -C, --checks LIST          Checks to run (default: $CHECKS)
+      --cpu-warn N  --cpu-crit N    Load per core thresholds (percent)
+      --mem-warn N  --mem-crit N    Memory usage thresholds (percent)
+      --disk-warn N --disk-crit N   Disk usage thresholds (percent)
+  -h, --help                 Show this help
+  -V, --version              Show version
+
+Exit codes: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN (usage/config error)
+USAGE
+}
+
+die() { printf '%s: error: %s\n' "$PROG" "$*" >&2; exit "$UNKNOWN"; }
+
+is_uint() { [[ $1 =~ ^[0-9]{1,4}$ ]]; }
+
+validate_list() { # name regex value
+  local name=$1 re=$2 item
+  local -a items
+  [[ -z $3 ]] && return 0
+  IFS=',' read -r -a items <<<"$3"
+  for item in "${items[@]}"; do
+    [[ $item =~ $re ]] || die "$name: invalid entry '$item'"
+  done
+}
+
+validate_ports() {
+  local p
+  local -a items
+  validate_list PORTS '^[0-9]{1,5}$' "$1"
+  [[ -z $1 ]] && return 0
+  IFS=',' read -r -a items <<<"$1"
+  for p in "${items[@]}"; do
+    (( 10#$p >= 1 && 10#$p <= 65535 )) || die "PORTS: out of range '$p'"
+  done
+}
+
+# Assign a setting after strict validation (whitelisted keys only).
+set_opt() {
+  local key=$1 val=$2
+  case $key in
+    CPU_WARN|CPU_CRIT) is_uint "$val" || die "$key must be an integer (got '$val')" ;;
+    MEM_WARN|MEM_CRIT|DISK_WARN|DISK_CRIT)
+      { is_uint "$val" && (( 10#$val <= 100 )); } || die "$key must be 0-100 (got '$val')" ;;
+    SERVICES) validate_list SERVICES '^[A-Za-z0-9@._:-]{1,255}$' "$val" ;;
+    PORTS) validate_ports "$val" ;;
+    CHECKS) validate_list CHECKS '^(cpu|mem|disk|services|ports)$' "$val" ;;
+    FORMAT) [[ $val == text || $val == json ]] || die "FORMAT must be text or json" ;;
+    *) die "unknown setting '$key'" ;;
+  esac
+  [[ $key == *_WARN || $key == *_CRIT ]] && val=$((10#$val))  # strip leading zeros
+  printf -v "$key" '%s' "$val"
+}
+
+# Config files are parsed line by line; they are NOT sourced, so they cannot
+# execute code even if writable by a less privileged user.
+load_config() {
+  local file=$1 line n=0
+  [[ -f $file && -r $file ]] || die "cannot read config file '$file'"
+  while IFS= read -r line || [[ -n $line ]]; do
+    n=$((n + 1))
+    line=${line%%#*}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    [[ -z $line ]] && continue
+    [[ $line =~ ^([A-Z_]+)=\"?([^\"]*)\"?$ ]] || die "$file:$n: invalid syntax"
+    set_opt "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  done <"$file"
+}
+
+record() { # name status value message
+  R_NAME+=("$1") R_STATUS+=("$2") R_VALUE+=("$3") R_MSG+=("$4")
+  if (( $2 > WORST )); then WORST=$2; fi
+}
+
+classify() { # value warn crit
+  if (( $1 >= $3 )); then echo "$CRIT"
+  elif (( $1 >= $2 )); then echo "$WARN"
+  else echo "$OK"; fi
+}
+
+check_cpu() {
+  local load1 rest cores pct
+  if ! read -r load1 rest <"$PROC_LOADAVG" 2>/dev/null || [[ ! $load1 =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    record cpu "$UNKNOWN" "" "cannot read load average"; return
+  fi
+  cores=${HC_NPROC:-$(nproc 2>/dev/null || echo 1)}
+  [[ $cores =~ ^[1-9][0-9]*$ ]] || cores=1
+  pct=$(awk -v l="$load1" -v c="$cores" 'BEGIN { printf "%d", (l / c) * 100 }')
+  record cpu "$(classify "$pct" "$CPU_WARN" "$CPU_CRIT")" "$pct" "load1=$load1 cores=$cores"
+}
+
+check_mem() {
+  local total avail pct
+  read -r total avail < <(awk '/^MemTotal:/ {t=$2} /^MemAvailable:/ {a=$2}
+    END { if (t > 0 && a != "") print t, a }' "$PROC_MEMINFO" 2>/dev/null) || true
+  if [[ -z ${total:-} || -z ${avail:-} ]]; then
+    record mem "$UNKNOWN" "" "cannot read memory info"; return
+  fi
+  pct=$(( (total - avail) * 100 / total ))
+  record mem "$(classify "$pct" "$MEM_WARN" "$MEM_CRIT")" "$pct" \
+    "used=$(( (total - avail) / 1024 ))MiB total=$(( total / 1024 ))MiB"
+}
+
+check_disk() {
+  local fs type avail pcent mount found=0
+  if ! command -v df >/dev/null; then record disk "$UNKNOWN" "" "df not found"; return; fi
+  while read -r fs type _ _ avail pcent mount; do
+    [[ $pcent =~ ^([0-9]+)%$ ]] || continue
+    # Container overlay mounts are noise on Docker hosts; keep only an overlay root.
+    [[ $type == overlay && $mount != / ]] && continue
+    found=1
+    record "disk:$mount" "$(classify "${BASH_REMATCH[1]}" "$DISK_WARN" "$DISK_CRIT")" \
+      "${BASH_REMATCH[1]}" "fs=$fs avail_kb=$avail"
+  done < <(df -P -k -T -x tmpfs -x devtmpfs -x squashfs -x efivarfs 2>/dev/null | tail -n +2)
+  (( found )) || record disk "$UNKNOWN" "" "no filesystems reported by df"
+}
+
+check_services() {
+  local svc
+  local -a items
+  [[ -z $SERVICES ]] && return 0
+  if ! command -v systemctl >/dev/null; then
+    record services "$UNKNOWN" "" "systemctl not found"; return
+  fi
+  IFS=',' read -r -a items <<<"$SERVICES"
+  for svc in "${items[@]}"; do
+    if systemctl is-active --quiet -- "$svc"; then
+      record "service:$svc" "$OK" "" "active"
+    else
+      record "service:$svc" "$CRIT" "" "not active"
+    fi
+  done
+}
+
+check_ports() {
+  local port listening
+  local -a items
+  [[ -z $PORTS ]] && return 0
+  if ! command -v ss >/dev/null; then record ports "$UNKNOWN" "" "ss not found"; return; fi
+  # Local address is column 4 of `ss -Hltn`; port is after the last colon.
+  listening=" $(ss -Hltn 2>/dev/null | awk '{ n = split($4, a, ":"); print a[n] }' | sort -un | tr '\n' ' ')"
+  IFS=',' read -r -a items <<<"$PORTS"
+  for port in "${items[@]}"; do
+    if [[ $listening == *" $((10#$port)) "* ]]; then
+      record "port:$port" "$OK" "" "listening"
+    else
+      record "port:$port" "$CRIT" "" "not listening"
+    fi
+  done
+}
+
+json_escape() {
+  local s=$1
+  s=${s//\\/\\\\}; s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}; s=${s//$'\t'/\\t}; s=${s//$'\r'/\\r}
+  printf '%s' "${s//[[:cntrl:]]/}"
+}
+
+output_text() {
+  local i
+  for i in "${!R_NAME[@]}"; do
+    printf '%-10s %-28s %5s  %s\n' "[${STATUS_NAMES[${R_STATUS[$i]}]}]" \
+      "${R_NAME[$i]}" "${R_VALUE[$i]:--}" "${R_MSG[$i]}"
+  done
+  printf 'OVERALL: %s\n' "${STATUS_NAMES[$WORST]}"
+}
+
+output_json() {
+  local i sep="" value
+  printf '{"host":"%s","timestamp":"%s","status":"%s","exit_code":%d,"checks":[' \
+    "$(json_escape "$(hostname 2>/dev/null || echo unknown)")" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${STATUS_NAMES[$WORST]}" "$WORST"
+  for i in "${!R_NAME[@]}"; do
+    value=${R_VALUE[$i]:-null}
+    printf '%s{"name":"%s","status":"%s","value":%s,"message":"%s"}' "$sep" \
+      "$(json_escape "${R_NAME[$i]}")" "${STATUS_NAMES[${R_STATUS[$i]}]}" \
+      "$value" "$(json_escape "${R_MSG[$i]}")"
+    sep=","
+  done
+  printf ']}\n'
+}
+
+main() {
+  local -a cli=()
+  while (( $# )); do
+    case $1 in
+      -h|--help) usage; exit "$OK" ;;
+      -V|--version) echo "$PROG $VERSION"; exit "$OK" ;;
+      -c|--config) [[ $# -ge 2 ]] || die "$1 requires an argument"; load_config "$2"; shift 2 ;;
+      -f|--format|-s|--services|-p|--ports|-C|--checks|--cpu-warn|--cpu-crit|--mem-warn|--mem-crit|--disk-warn|--disk-crit)
+        [[ $# -ge 2 ]] || die "$1 requires an argument"
+        cli+=("$1" "$2"); shift 2 ;;
+      *) usage >&2; die "unknown argument '$1'" ;;
+    esac
+  done
+  # CLI options take precedence over the config file regardless of order.
+  set -- "${cli[@]+"${cli[@]}"}"
+  while (( $# )); do
+    case $1 in
+      -f|--format) set_opt FORMAT "$2" ;;
+      -s|--services) set_opt SERVICES "$2" ;;
+      -p|--ports) set_opt PORTS "$2" ;;
+      -C|--checks) set_opt CHECKS "$2" ;;
+      --cpu-warn) set_opt CPU_WARN "$2" ;;  --cpu-crit) set_opt CPU_CRIT "$2" ;;
+      --mem-warn) set_opt MEM_WARN "$2" ;;  --mem-crit) set_opt MEM_CRIT "$2" ;;
+      --disk-warn) set_opt DISK_WARN "$2" ;; --disk-crit) set_opt DISK_CRIT "$2" ;;
+    esac
+    shift 2
+  done
+  (( CPU_WARN <= CPU_CRIT && MEM_WARN <= MEM_CRIT && DISK_WARN <= DISK_CRIT )) \
+    || die "warning thresholds must not exceed critical thresholds"
+
+  [[ ,$CHECKS, == *,cpu,* ]] && check_cpu
+  [[ ,$CHECKS, == *,mem,* ]] && check_mem
+  [[ ,$CHECKS, == *,disk,* ]] && check_disk
+  [[ ,$CHECKS, == *,services,* ]] && check_services
+  [[ ,$CHECKS, == *,ports,* ]] && check_ports
+
+  if [[ $FORMAT == json ]]; then output_json; else output_text; fi
+  exit "$WORST"
+}
+
+main "$@"
