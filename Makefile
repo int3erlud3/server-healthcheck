@@ -5,7 +5,7 @@ GITLEAKS_IMAGE := ghcr.io/gitleaks/gitleaks:v8.30.1
 all: lint test
 
 lint:
-	shellcheck -x $(SHELL_FILES)
+	shellcheck -x -S style $(SHELL_FILES)
 
 test:
 	bats tests

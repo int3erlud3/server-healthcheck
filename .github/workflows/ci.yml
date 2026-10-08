@@ -47,5 +47,5 @@ jobs:
         run: >
           docker run --rm -v "$PWD:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.30.1
           git /repo --redact --no-banner
-      - name: ShellCheck strict (style level and above)
-        run: shellcheck -x -S style bin/server-healthcheck tests/mocks/*
+      - name: ShellCheck strict (optional checks enabled)
+        run: shellcheck -x -S style -o check-unassigned-uppercase,require-double-brackets bin/server-healthcheck tests/mocks/*
