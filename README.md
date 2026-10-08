@@ -3,6 +3,23 @@
 [![CI](https://github.com/int3erlud3/server-healthcheck/actions/workflows/ci.yml/badge.svg)](https://github.com/int3erlud3/server-healthcheck/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+```text
+   ___ ___ _ ___ _____ _ _
+  (_-</ -_) '_\ V / -_) '_|
+  /__/\___|_|  \_/\___|_|
+   _             _ _   _       _           _
+  | |_  ___ __ _| | |_| |_  __| |_  ___ __| |__
+  | ' \/ -_) _` | |  _| ' \/ _| ' \/ -_) _| / /
+  |_||_\___\__,_|_|\__|_||_\__|_||_\___\__|_\_\
+
++====================================================================+
+|  SERVER HEALTHCHECK  ::  System Health & Service Monitor           |
++--------------------------------------------------------------------+
+|  CPU, memory, disk, services & ports with Nagios-ready exit codes  |
+|  v1.0.0  -  Bastion Ops Toolkit  -  by int3erlud3                  |
++====================================================================+
+```
+
 A dependency-free Bash health check for Linux servers. It checks CPU load, memory,
 disk usage, systemd services and listening TCP ports, prints a human-readable table
 or JSON, and returns **Nagios/Icinga-compatible exit codes** so it can be used from
@@ -92,6 +109,14 @@ Cron example (mail only when something is wrong):
 | `FORMAT` / `--format`          | `text`                         | `text` or `json`                         |
 
 See [`examples/healthcheck.conf`](examples/healthcheck.conf).
+
+## Startup banner
+
+Part of the **Bastion Ops Toolkit**. When run interactively, `server-healthcheck` prints the
+banner shown above to **stderr** – only if stderr is a terminal and never together with `--format json`. Pipes,
+cron jobs, systemd units and monitoring agents see exactly the same output and exit
+codes as before. Disable it with `--no-banner` or `NO_BANNER=1`; `--help` and
+`--version` show it on a terminal too.
 
 ## Development
 

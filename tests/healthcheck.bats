@@ -116,3 +116,65 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" != *"overlay2"* ]]
 }
+
+# ---- banner -----------------------------------------------------------------
+# script(1) runs the command on a pseudo-terminal, so stdout/stderr are a TTY.
+on_tty() {
+  command -v script >/dev/null || skip "script(1) not available"
+  run script -qefc "$(printf '%q ' "$@")" /dev/null </dev/null
+}
+
+@test "banner is printed on an interactive terminal" {
+  on_tty "$HC" -C cpu
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Bastion Ops Toolkit"* ]]
+  [[ "$output" == *"SERVER HEALTHCHECK"* ]]
+  [[ "$output" == *"OVERALL: OK"* ]]
+}
+
+@test "banner is not printed when stderr is not a terminal" {
+  run "$HC" -C cpu
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Bastion Ops Toolkit"* ]]
+  [[ "$output" == "[OK]"* ]]
+}
+
+@test "--no-banner and NO_BANNER=1 suppress the banner on a terminal" {
+  on_tty "$HC" --no-banner -C cpu
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Bastion Ops Toolkit"* ]]
+  on_tty env NO_BANNER=1 "$HC" -C cpu
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Bastion Ops Toolkit"* ]]
+}
+
+@test "JSON output never includes the banner, even on a terminal" {
+  on_tty "$HC" -f json -C cpu
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Bastion Ops Toolkit"* ]]
+  printf '%s\n' "$output" | tr -d '\r' | jq -e '.status == "OK"' >/dev/null
+}
+
+@test "Nagios exit codes are unchanged on a terminal" {
+  export HC_PROC_LOADAVG="$FIX/loadavg_high"
+  on_tty "$HC" -C cpu
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Bastion Ops Toolkit"* ]]
+}
+
+@test "--version shows the banner on a terminal, plain version otherwise" {
+  on_tty "$HC" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Bastion Ops Toolkit"* ]]
+  run "$HC" --version
+  [[ "$output" =~ ^server-healthcheck\ [0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+@test "README banner matches the runtime banner" {
+  on_tty "$HC" --version
+  # first ```text block of the README
+  expected=$(awk -v fence='```' '$0 == fence "text" { on = 1; next } on && $0 == fence { exit } on' "$ROOT/README.md")
+  actual=$(printf '%s\n' "$output" | tr -d '\r')
+  [ -n "$expected" ]
+  [[ "$actual" == "$expected"* ]]
+}

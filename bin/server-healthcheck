@@ -18,6 +18,7 @@ SERVICES=""                 # comma-separated systemd units that must be active
 PORTS=""                    # comma-separated TCP ports that must be listening
 CHECKS="cpu,mem,disk,services,ports"
 FORMAT="text"
+SHOW_BANNER=1
 
 # Data sources, overridable for testing only.
 PROC_LOADAVG="${HC_PROC_LOADAVG:-/proc/loadavg}"
@@ -25,6 +26,37 @@ PROC_MEMINFO="${HC_PROC_MEMINFO:-/proc/meminfo}"
 
 R_NAME=() R_STATUS=() R_VALUE=() R_MSG=()
 WORST=$OK
+
+# ---- banner (cosmetic: stderr only, interactive terminals only) -----------
+# Bastion Ops Toolkit banner. Disable with --no-banner or NO_BANNER=1. Not shown when
+# stderr is not a terminal (cron, pipes, systemd, monitoring agents).
+banner_enabled() {
+  (( SHOW_BANNER )) || return 1
+  [[ -z ${NO_BANNER:-} || ${NO_BANNER} == 0 ]] || return 1
+  [[ -t 2 ]]
+}
+
+print_banner() {
+  banner_enabled || return 0
+  {
+    cat <<'WORDMARK'
+   ___ ___ _ ___ _____ _ _
+  (_-</ -_) '_\ V / -_) '_|
+  /__/\___|_|  \_/\___|_|
+   _             _ _   _       _           _
+  | |_  ___ __ _| | |_| |_  __| |_  ___ __| |__
+  | ' \/ -_) _` | |  _| ' \/ _| ' \/ -_) _| / /
+  |_||_\___\__,_|_|\__|_||_\__|_||_\___\__|_\_\
+
++====================================================================+
+|  SERVER HEALTHCHECK  ::  System Health & Service Monitor           |
++--------------------------------------------------------------------+
+|  CPU, memory, disk, services & ports with Nagios-ready exit codes  |
+WORDMARK
+    printf '|  %-64s  |\n' "v$VERSION  -  Bastion Ops Toolkit  -  by int3erlud3"
+    printf '%s\n\n' '+====================================================================+'
+  } >&2 || true
+}
 
 usage() {
   cat <<USAGE
@@ -38,6 +70,7 @@ Usage: $PROG [options]
       --cpu-warn N  --cpu-crit N    Load per core thresholds (percent)
       --mem-warn N  --mem-crit N    Memory usage thresholds (percent)
       --disk-warn N --disk-crit N   Disk usage thresholds (percent)
+      --no-banner            Do not print the startup banner (or NO_BANNER=1)
   -h, --help                 Show this help
   -V, --version              Show version
 
@@ -218,10 +251,15 @@ output_json() {
 
 main() {
   local -a cli=()
+  local arg
+  for arg in "$@"; do
+    if [[ $arg == --no-banner ]]; then SHOW_BANNER=0; fi
+  done
   while (( $# )); do
     case $1 in
-      -h|--help) usage; exit "$OK" ;;
-      -V|--version) echo "$PROG $VERSION"; exit "$OK" ;;
+      -h|--help) print_banner; usage; exit "$OK" ;;
+      -V|--version) print_banner; echo "$PROG $VERSION"; exit "$OK" ;;
+      --no-banner) shift ;;
       -c|--config) [[ $# -ge 2 ]] || die "$1 requires an argument"; load_config "$2"; shift 2 ;;
       -f|--format|-s|--services|-p|--ports|-C|--checks|--cpu-warn|--cpu-crit|--mem-warn|--mem-crit|--disk-warn|--disk-crit)
         [[ $# -ge 2 ]] || die "$1 requires an argument"
@@ -245,6 +283,9 @@ main() {
   done
   (( CPU_WARN <= CPU_CRIT && MEM_WARN <= MEM_CRIT && DISK_WARN <= DISK_CRIT )) \
     || die "warning thresholds must not exceed critical thresholds"
+
+  # Banner goes to stderr on a terminal only and never accompanies JSON output.
+  if [[ $FORMAT != json ]]; then print_banner; fi
 
   [[ ,$CHECKS, == *,cpu,* ]] && check_cpu
   [[ ,$CHECKS, == *,mem,* ]] && check_mem
