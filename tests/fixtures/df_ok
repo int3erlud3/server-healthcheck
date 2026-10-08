@@ -1,0 +1,4 @@
+Filesystem     Type     1024-blocks     Used Available Capacity Mounted on
+/dev/sda1      ext4        41152736 12000000  27000000      31% /
+/dev/sdb1      xfs        103081248 50000000  48000000      51% /srv/data
+overlay        overlay     41152736 12000000  27000000      99% /var/lib/docker/overlay2/abc/merged

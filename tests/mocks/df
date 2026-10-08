@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Mock df: prints the content of $MOCK_DF_OUTPUT (a file).
+cat "${MOCK_DF_OUTPUT:?}"

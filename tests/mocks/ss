@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Mock ss: prints listening sockets in `ss -Hltn` format.
+cat <<'OUT'
+LISTEN 0      128          0.0.0.0:22        0.0.0.0:*
+LISTEN 0      511             [::]:443          [::]:*
+LISTEN 0      4096       127.0.0.1:9100      0.0.0.0:*
+OUT

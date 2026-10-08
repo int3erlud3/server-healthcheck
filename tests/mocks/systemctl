@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Mock systemctl: units listed in $MOCK_ACTIVE_UNITS (space-separated) are active.
+unit="${*: -1}"
+for u in ${MOCK_ACTIVE_UNITS:-}; do [[ $u == "$unit" ]] && exit 0; done
+exit 3
